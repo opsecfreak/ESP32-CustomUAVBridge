@@ -23,6 +23,38 @@
     </div>
 </div>
 <div class="container">
+    <!-- Compact telemetry dashboard -->
+    <div id="telemetry_dashboard" style="margin-bottom: 1rem;">
+        <h2>Telemetry</h2>
+        <div class="row">
+            <div class="four columns">
+                <label>RSSI</label>
+                <div id="telemetry_rssi">- dBm</div>
+            </div>
+            <div class="four columns">
+                <label>SNR (est.)</label>
+                <div id="telemetry_snr">-</div>
+            </div>
+            <div class="four columns">
+                <label>Packet loss</label>
+                <div id="telemetry_ploss">- %</div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="six columns">
+                <label>UART throughput</label>
+                <div id="telemetry_uart_rate">- B/s</div>
+            </div>
+            <div class="six columns">
+                <label>MAV msgs decoded</label>
+                <div id="telemetry_mav_msgs">-</div>
+            </div>
+        </div>
+        <div class="row">
+            <canvas id="telemetry_graph" width="600" height="120" style="width:100%;max-width:600px;border:1px solid #ddd;background:#fff"></canvas>
+        </div>
+    </div>
+
     <form id="settings_form">
         <div>
             <div class="info issue" id="issue_div">

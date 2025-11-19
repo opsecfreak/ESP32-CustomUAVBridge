@@ -8,6 +8,11 @@ let last_timestamp_byte_count = 0;
 let esp_chip_model = 0;		// according to get_esp_chip_model_str()
 let recv_ser_bytes = 0;		// Total bytes received from serial interface
 let serial_dec_mav_msgs = 0;	// Total MAVLink messages decoded from serial interface
+// telemetry graph buffer (bytes/sec)
+const GRAPH_POINTS = 80;
+let graph_data = new Array(GRAPH_POINTS).fill(0);
+let graph_pos = 0;
+
 let set_telem_proto = null;		// Telemetry protocol received by the ESP32
 
 function change_radio_dis_arm_visibility() {
@@ -289,6 +294,48 @@ function get_stats() {
 		}
 		last_byte_count = recv_ser_bytes;
 
+		// Update telemetry small dashboard elements if they exist
+		const rssiElem = document.getElementById("telemetry_rssi");
+		const snrElem = document.getElementById("telemetry_snr");
+		const plossElem = document.getElementById("telemetry_ploss");
+		const uartRateElem = document.getElementById("telemetry_uart_rate");
+		const mavElem = document.getElementById("telemetry_mav_msgs");
+		if (uartRateElem) {
+			if (bytes_per_second > 1000000) {
+				uartRateElem.innerText = (bytes_per_second / 1000000).toFixed(2) + " MB/s";
+			} else if (bytes_per_second > 1000) {
+				uartRateElem.innerText = (bytes_per_second / 1000).toFixed(1) + " kB/s";
+			} else {
+				uartRateElem.innerText = Math.round(bytes_per_second) + " B/s";
+			}
+		}
+		if (mavElem) mavElem.innerText = serial_dec_mav_msgs;
+
+		// RSSI & SNR estimates
+		if ('esp_rssi' in json_data) {
+			const rssi = parseInt(json_data['esp_rssi']);
+			if (rssiElem) rssiElem.innerText = rssi + " dBm";
+			// estimate SNR if noise floor provided
+			if ('air_noise_floor' in json_data && json_data['air_noise_floor'] !== 255) {
+				const noise = parseInt(json_data['air_noise_floor']);
+				const snr = rssi - noise; // rough estimate
+				if (snrElem) snrElem.innerText = snr + " dB";
+			}
+		} else if ('connected_sta' in json_data) {
+			// take average of connected station RSSIs
+			let sum = 0; let n = 0;
+			json_data['connected_sta'].forEach(item => { sum += item.sta_rssi; n++; });
+			if (n>0 && rssiElem) rssiElem.innerText = Math.round(sum/n) + " dBm";
+		}
+
+		// packet loss placeholder (not available server-side yet)
+		if (plossElem) plossElem.innerText = "-";
+
+		// push new point into graph buffer and draw
+		graph_data[graph_pos] = bytes_per_second;
+		graph_pos = (graph_pos + 1) % GRAPH_POINTS;
+		drawTelemetryGraph();
+
 		let tcp_clients = parseInt(json_data["tcp_connected"])
 		if (!isNaN(tcp_clients) && tcp_clients === 1) {
 			document.getElementById("tcp_connected").innerHTML = tcp_clients + " client"
@@ -475,3 +522,120 @@ function save_settings() {
 		console.log("Form was not filled out correctly.")
 	}
 }
+
+/**
+ * Draw the telemetry throughput graph on the canvas
+ */
+function drawTelemetryGraph() {
+	const canvas = document.getElementById('telemetry_graph');
+	if (!canvas) return;
+	const ctx = canvas.getContext('2d');
+	const w = canvas.width;
+	const h = canvas.height;
+	// clear
+	ctx.fillStyle = '#ffffff';
+	ctx.fillRect(0,0,w,h);
+	// compute max
+	let maxv = 1;
+	for (let i=0;i<GRAPH_POINTS;i++) if (graph_data[i] > maxv) maxv = graph_data[i];
+	// draw grid lines
+	ctx.strokeStyle = '#eee';
+	ctx.lineWidth = 1;
+	for (let g=0; g<4; g++) {
+		const y = Math.round((g/4)*h);
+		ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+	}
+	// draw line
+	ctx.strokeStyle = '#0058a6';
+	ctx.lineWidth = 2;
+	ctx.beginPath();
+	for (let i=0;i<GRAPH_POINTS;i++) {
+		const idx = (graph_pos + i) % GRAPH_POINTS;
+		const x = Math.round((i/ (GRAPH_POINTS-1)) * w);
+		const v = graph_data[idx] / maxv;
+		const y = Math.round(h - v * (h-4) - 2);
+		if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+	}
+	ctx.stroke();
+	// draw label
+	ctx.fillStyle = '#333';
+	ctx.font = '12px Arial';
+	const last = graph_data[(graph_pos+GRAPH_POINTS-1)%GRAPH_POINTS];
+	ctx.fillText('UART: ' + (last>1000? (last/1000).toFixed(1)+' kB/s': Math.round(last)+' B/s'), 6, 12);
+}
+
+/* Setup Server-Sent Events (SSE) to receive push telemetry when available.
+ * Falls back to polling (get_stats) when SSE isn't supported or on error. */
+function setupSSE() {
+	if (typeof (EventSource) === 'undefined') {
+		// SSE not available in this browser/environment
+		return;
+	}
+	try {
+		const es = new EventSource(ROOT_URL + "api/system/stream");
+		es.onopen = function () { console.log('SSE connected'); };
+		es.onerror = function (e) { console.log('SSE error', e); es.close(); };
+		es.onmessage = function (evt) {
+			try {
+				const json_data = JSON.parse(evt.data);
+				conn_status = 1;
+				// reuse logic from get_stats: update byte counters and UI
+				recv_ser_bytes = parseInt(json_data["read_bytes"]);
+				serial_dec_mav_msgs = parseInt(json_data["serial_dec_mav_msgs"]);
+				const now = Date.now();
+				let bytes_per_second = 0;
+				if (last_byte_count > 0 && last_timestamp_byte_count > 0) {
+					bytes_per_second = (recv_ser_bytes - last_byte_count) / ((now - last_timestamp_byte_count) / 1000);
+				}
+				last_timestamp_byte_count = now;
+				if (!isNaN(recv_ser_bytes) && recv_ser_bytes > 1000000) {
+					document.getElementById("read_bytes").innerHTML = (recv_ser_bytes / 1000000).toFixed(3) + " MB (" + ((bytes_per_second*8)/1000).toFixed(2) + " kbit/s)"
+				} else if (!isNaN(recv_ser_bytes) && recv_ser_bytes > 1000) {
+					document.getElementById("read_bytes").innerHTML = (recv_ser_bytes / 1000).toFixed(2) + " kB (" + ((bytes_per_second*8)/1000).toFixed(2) + " kbit/s)"
+				} else if (!isNaN(recv_ser_bytes)) {
+					document.getElementById("read_bytes").innerHTML = recv_ser_bytes + " bytes (" + Math.round(bytes_per_second) + " byte/s)"
+				}
+				last_byte_count = recv_ser_bytes;
+
+				const rssiElem = document.getElementById("telemetry_rssi");
+				const snrElem = document.getElementById("telemetry_snr");
+				const plossElem = document.getElementById("telemetry_ploss");
+				const uartRateElem = document.getElementById("telemetry_uart_rate");
+				const mavElem = document.getElementById("telemetry_mav_msgs");
+				if (uartRateElem) {
+					if (bytes_per_second > 1000000) {
+						uartRateElem.innerText = (bytes_per_second / 1000000).toFixed(2) + " MB/s";
+					} else if (bytes_per_second > 1000) {
+						uartRateElem.innerText = (bytes_per_second / 1000).toFixed(1) + " kB/s";
+					} else {
+						uartRateElem.innerText = Math.round(bytes_per_second) + " B/s";
+					}
+				}
+				if (mavElem) mavElem.innerText = serial_dec_mav_msgs;
+
+				if ('esp_rssi' in json_data) {
+					const rssi = parseInt(json_data['esp_rssi']);
+					if (rssiElem) rssiElem.innerText = rssi + " dBm";
+					if ('air_noise_floor' in json_data && json_data['air_noise_floor'] !== 255) {
+						const noise = parseInt(json_data['air_noise_floor']);
+						const snr = rssi - noise;
+						if (snrElem) snrElem.innerText = snr + " dB";
+					}
+				}
+
+				// push new point into graph buffer and draw
+				graph_data[graph_pos] = bytes_per_second;
+				graph_pos = (graph_pos + 1) % GRAPH_POINTS;
+				drawTelemetryGraph();
+
+			} catch (ex) {
+				console.log('SSE parse error', ex);
+			}
+		};
+	} catch (e) {
+		console.log('SSE setup failed', e);
+	}
+}
+
+// try to establish SSE on load; keep polling as a fallback
+setTimeout(setupSSE, 500);

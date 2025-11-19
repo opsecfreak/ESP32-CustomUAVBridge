@@ -26,12 +26,14 @@
 #include <esp_chip_info.h>
 #include "esp_http_server.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "cJSON.h"
 #include "globals.h"
 #include "main.h"
 #include "db_serial.h"
+#include "dronebridge_config.h"
 
 #define TAG "DB_HTTP_REST"
 #define REST_CHECK(a, str, goto_tag, ...)                                              \
@@ -317,11 +319,18 @@ static esp_err_t system_info_get_handler(httpd_req_t *req) {
  * @param req
  * @return ESP_OK on successfully sending the http request
  */
-static esp_err_t system_stats_get_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "application/json");
+/* Helper to build the system stats JSON object. Caller must delete the returned cJSON object. */
+static cJSON *build_system_stats_cjson(void)
+{
     cJSON *root = cJSON_CreateObject();
+    /* Serial/telemetry counters (cumulative) - frontend may compute rates from deltas */
     cJSON_AddNumberToObject(root, "read_bytes", serial_total_byte_count);
     cJSON_AddNumberToObject(root, "serial_dec_mav_msgs", serial_total_decoded_mav_msgs);
+    /* Heap and uptime info */
+    cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(root, "min_free_heap", esp_get_minimum_free_heap_size());
+    int64_t uptime_us = esp_timer_get_time();
+    cJSON_AddNumberToObject(root, "uptime_seconds", (double) uptime_us / 1000000.0);
     cJSON_AddNumberToObject(root, "tcp_connected", num_connected_tcp_clients);
     cJSON_AddNumberToObject(root, "udp_connected", udp_conn_list->size);
     // add IP:PORT info on connected UDP clients
@@ -338,6 +347,9 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_STA) {
         cJSON_AddStringToObject(root, "current_client_ip", CURRENT_CLIENT_IP);
         cJSON_AddNumberToObject(root, "esp_rssi", db_esp_signal_quality.air_rssi);
+        cJSON_AddNumberToObject(root, "air_noise_floor", db_esp_signal_quality.air_noise_floor);
+        cJSON_AddNumberToObject(root, "gnd_rssi", db_esp_signal_quality.gnd_rssi);
+        cJSON_AddNumberToObject(root, "gnd_noise_floor", db_esp_signal_quality.gnd_noise_floor);
     } else if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP || DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
         cJSON *sta_array = cJSON_AddArrayToObject(root, "connected_sta");
         for (int i = 0; i < wifi_sta_list.num; i++) {
@@ -348,15 +360,44 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
                     wifi_sta_list.sta[i].mac[3], wifi_sta_list.sta[i].mac[4], wifi_sta_list.sta[i].mac[5]);
             cJSON_AddStringToObject(connected_stations_status, "sta_mac", mac_str);
             cJSON_AddNumberToObject(connected_stations_status, "sta_rssi", wifi_sta_list.sta[i].rssi);
+            /* add possible per-station fields in future: SNR, packet_loss */
             cJSON_AddItemToArray(sta_array, connected_stations_status);
         }
     } else {
         // other modes like ESP-NOW do not activate HTTP server so do nothing
     }
-    const char *sys_info = cJSON_Print(root);
-    httpd_resp_sendstr(req, sys_info);
-    free((void *) sys_info);
-    cJSON_Delete(root);
+    /* Add air/gnd noise floor values if present (already partially added above) */
+    return root;
+}
+
+/* SSE handler: stream stats at a periodic interval to EventSource clients */
+static esp_err_t system_stats_sse_handler(httpd_req_t *req)
+{
+    esp_err_t err;
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
+    httpd_resp_set_type(req, "text/event-stream");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    while (true) {
+        cJSON *root = build_system_stats_cjson();
+        char *json = cJSON_PrintUnformatted(root);
+        if (!json) { cJSON_Delete(root); break; }
+
+        err = httpd_resp_send_chunk(req, "data: ", strlen("data: "));
+        if (err != ESP_OK) { free(json); cJSON_Delete(root); break; }
+        err = httpd_resp_send_chunk(req, json, strlen(json));
+        if (err != ESP_OK) { free(json); cJSON_Delete(root); break; }
+        err = httpd_resp_send_chunk(req, "\n\n", 2);
+        if (err != ESP_OK) { free(json); cJSON_Delete(root); break; }
+
+        free(json);
+        cJSON_Delete(root);
+
+        vTaskDelay(DB_SSE_STATS_INTERVAL_MS / portTICK_PERIOD_MS);
+    }
+
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -400,6 +441,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     cJSON *root = cJSON_CreateObject();
     db_param_write_all_params_json(root);
+    /* For the XIAO C3 official build hide UART pin settings from the web UI/settings output
+     * since pins are fixed by the build and cannot be changed via the UI. */
+#if defined(CONFIG_DB_OFFICIAL_BOARD_1_X_C3)
+    cJSON_DeleteItemFromObject(root, "gpio_tx");
+    cJSON_DeleteItemFromObject(root, "gpio_rx");
+    cJSON_DeleteItemFromObject(root, "gpio_rts");
+    cJSON_DeleteItemFromObject(root, "gpio_cts");
+#endif
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
     free((void *) sys_info);
@@ -447,6 +496,15 @@ esp_err_t start_rest_server(const char *base_path) {
             .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &system_stats_get_uri);
+
+    /* Server-Sent Events (SSE) endpoint for realtime stats */
+    httpd_uri_t system_stats_sse_uri = {
+        .uri = "/api/system/stream",
+        .method = HTTP_GET,
+        .handler = system_stats_sse_handler,
+        .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &system_stats_sse_uri);
 
     /* URI handler for fetching settings data */
     httpd_uri_t settings_get_uri = {

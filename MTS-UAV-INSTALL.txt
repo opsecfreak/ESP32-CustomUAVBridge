@@ -1,0 +1,107 @@
+MTS-UAV-INSTALL
+
+Goal
+----
+Flash the DroneBridge firmware for the Seeed XIAO ESP32-C3 (4MB) and (optionally) flash to other ESP32 family boards like ESP32-S3. This document shows the easiest, most reliable method for Windows (PowerShell), using ESP-IDF 5.x (recommended).
+
+Prerequisites
+-------------
+- Windows 10/11 with PowerShell (you said your default shell is PowerShell).
+- Python 3.10+ and pip.
+- ESP-IDF 5.x installed and working. Follow ESP-IDF installation instructions and run the PowerShell environment activation (e.g., \"install.bat\" or \"export.ps1\").
+- Supported USB-UART adapter or native USB on your dev board (ESP32-S3 often has native USB; XIAO C3 uses on-board USB to serial depending on the board revision).
+- USB cable that carries data (not charging-only).
+
+Build & Flash (recommended: idf.py)
+----------------------------------
+Notes:
+- The code in this repository is configured for Seeed XIAO ESP32-C3 (4MB flash). If you flash a different chip (ESP32-S3) you must first set the IDF target and select an appropriate `sdkconfig` for that target.
+
+1) Open a new PowerShell with the ESP-IDF environment activated (run the ESP-IDF PowerShell activation script you installed):
+
+```powershell
+# Example - adjust to your ESP-IDF install path
+C:\path\to\esp-idf\export.ps1
+# You should now have idf.py in your PATH
+```
+
+2) From the repository root build for the XIAO ESP32-C3 (default sdkconfig_c3 is included):
+
+```powershell
+# set target to esp32c3
+idf.py set-target esp32c3
+# Use the c3 sdkconfig (this repo ships sdkconfig_c3) by copying it to sdkconfig
+copy .\sdkconfig_c3 .\sdkconfig
+# clean and build
+idf.py fullclean
+idf.py build
+```
+
+3) Flash and monitor (replace COM3 with your actual port):
+
+```powershell
+idf.py -p COM3 flash monitor
+# To exit monitor: Ctrl-] (or Ctrl-C depending on your idf.py version), then press Enter
+```
+
+4) Expected checks after flash
+- Serial monitor should show boot logs. Look for messages like `app_main finished initial setup` and `Rest Server started` (depending on build config).
+- By default the firmware is configured to create a Wi‑Fi AP on channel 6 in LR mode (if DB_PARAM_RADIO_MODE==AP_LR). See debug log for Wi-Fi start messages.
+
+If you need to flash using esptool (binary files)
+----------------------------------------------
+1) Build as above. Then locate the binaries in the `build` directory (bootloader.bin, partition-table.bin, <project>.bin).
+2) Use esptool (installed with ESP-IDF) to write flash. Example for esp32c3 with 4MB flash:
+
+```powershell
+esptool.py --chip esp32c3 --port COM3 --baud 115200 write_flash -z \
+  0x0 build/bootloader/bootloader.bin \
+  0x10000 build/partition_table/partition-table.bin \
+  0x10000 build/your_project.bin
+```
+
+Notes:
+- Offsets and file names depend on your project and IDF version. `idf.py -p COM3 flash` is preferred because it selects correct offsets.
+- Some boards need you to hold the BOOT (or FLASH) button while resetting to enter serial bootloader mode. Many modern dev boards support automatic reset via DTR/RTS and do not need manual intervention.
+
+Flashing an ESP32-S3 instead of the C3
+-------------------------------------
+- If you want to target an ESP32-S3 board, change target first:
+
+```powershell
+idf.py set-target esp32s3
+copy .\sdkconfig_s3 .\sdkconfig   # if the repo has an S3 sdkconfig
+idf.py fullclean
+idf.py build
+idf.py -p COMx flash monitor
+```
+
+- Important: DO NOT flash an image built for a different chip (esp32c3) onto an S3 device — this will fail to boot or may brick the board until you re-flash with a correct image.
+
+Boot-mode and hardware notes
+----------------------------
+- XIAO and many modules expose USB-to-UART: just connect with a USB cable and run `idf.py -p COMx flash`.
+- Bare modules (no onboard USB) require an external USB-UART adapter connected to TX/RX and RTS/DTR for auto-reset. You may need to press BOOT while resetting if auto-reset is not wired.
+- If your board has a boot/enable button (BOOT/EN) follow manufacturer instructions to enter flash mode.
+
+Troubleshooting
+---------------
+- If build fails: ensure ESP-IDF 5.x is installed and `python` and `idf.py` are available in PowerShell.
+- If flash fails: verify the COM port, cable, and that the board is in bootloader (flash) mode or supports auto-reset.
+- If firmware won't run after flash: confirm you used correct target (esp32c3 vs esp32s3) and correct sdkconfig.
+- To clear NVS defaults and force fresh defaults: use `idf.py erase_flash` (this erases the entire flash) and re-flash.
+
+Verifying UART pins & flow control
+---------------------------------
+- The XIAO C3 build enforces UART pins: TX=GPIO5, RX=GPIO4, RTS=GPIO6, CTS=GPIO7 and enables HW flow control if supported. If the UART driver cannot enable HW flow-control, firmware will fall back to software/no-flow mode and log a warning to the console.
+
+Security & regulatory
+---------------------
+- The firmware will attempt to set TX power to a high value for LR operation. Be sure to comply with your local regulatory limits for transmit power and frequencies.
+
+Contact
+-------
+If anything breaks or you need help adjusting for another ESP32 family chip (ESP32-S3, ESP32-C6), provide the board name and I will prepare a matching sdkconfig and small set of changes.
+
+---
+End of MTS-UAV-INSTALL.txt

@@ -757,7 +757,22 @@ void db_param_read_all_params_json(const cJSON *root_obj) {
                 break;
             case UINT8:
                 if (jobject) {
+                    /*
+                     * For official XIAO ESP32-C3 builds we enforce the UART pin mapping and
+                     * disallow changing the UART GPIO pins via the web/JSON API. This keeps
+                     * the build focused on the single-board target and prevents accidental
+                     * reconfiguration that would break serial telemetry.
+                     */
+#if defined(CONFIG_DB_OFFICIAL_BOARD_1_X_C3)
+                    if (db_params[i] == &db_param_gpio_tx || db_params[i] == &db_param_gpio_rx || db_params[i] == &db_param_gpio_rts || db_params[i] == &db_param_gpio_cts) {
+                        ESP_LOGW(TAG, "Ignoring attempt to change UART GPIO '%s' via JSON on C3 board - pins are fixed by build.", (char *) db_params[i]->db_name);
+                        // do not assign
+                    } else {
+                        db_param_is_valid_assign_u8(jobject->valueint, db_params[i]);
+                    }
+#else
                     db_param_is_valid_assign_u8(jobject->valueint, db_params[i]);
+#endif
                 } else {
                     // do nothing - param was not found in the json
                 }

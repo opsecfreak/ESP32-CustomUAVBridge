@@ -91,7 +91,24 @@ esp_err_t open_uart_serial_socket() {
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, DB_PARAM_GPIO_TX, DB_PARAM_GPIO_RX,
                                  flow_control ? DB_PARAM_GPIO_RTS : UART_PIN_NO_CHANGE,
                                  flow_control ? DB_PARAM_GPIO_CTS : UART_PIN_NO_CHANGE));
-    return uart_driver_install(UART_NUM, 1024, 0, 10, NULL, 0);
+
+    // Try to install UART driver. If HW flow control was requested but not supported on this
+    // platform/compiler configuration, gracefully fall back to disabled flow control.
+    esp_err_t res = uart_driver_install(UART_NUM, 1024, 0, 10, NULL, 0);
+    if (res == ESP_OK) {
+        return ESP_OK;
+    }
+    // If failure and flow control was requested, retry without flow control
+    if (flow_control) {
+        ESP_LOGW(TAG, "UART driver install failed with flow control enabled (err=%d). Retrying with flow control disabled.", res);
+        uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+        uart_config.rx_flow_ctrl_thresh = 0;
+        ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+        ESP_ERROR_CHECK(uart_set_pin(UART_NUM, DB_PARAM_GPIO_TX, DB_PARAM_GPIO_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+        return uart_driver_install(UART_NUM, 1024, 0, 10, NULL, 0);
+    }
+    // otherwise return the original error
+    return res;
 }
 
 /**

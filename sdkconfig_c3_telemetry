@@ -1,0 +1,59 @@
+# trimmed telemetry-focused sdkconfig for XIAO ESP32-C3 (4MB)
+# Use this as a starting point: copy to sdkconfig before build (or merge with menuconfig)
+# Focus: disable Bluetooth, GDB stub, HTTPS and other heavy features to save space.
+
+# Target
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_ESP32C3_DEFAULT_CPU_FREQ_160=y
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Board selection / custom Kconfigs used in project
+CONFIG_DB_OFFICIAL_BOARD_1_X=y
+CONFIG_DB_OFFICIAL_BOARD_1_X_C3=y
+
+# Build optimization: prefer size
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Disable Bluetooth and NimBLE (big footprint)
+# Note: If you need BLE, remove these lines
+# CONFIG_BT_ENABLED is not set
+# CONFIG_BT_BLUEDROID_ENABLED is not set
+# CONFIG_BT_NIMBLE_ENABLED is not set
+
+# Disable GDB stub to save space
+# CONFIG_ESP_GDBSTUB_ENABLED is not set
+
+# Disable HTTPS server/client if not required
+# CONFIG_ESP_TLS is not set
+# CONFIG_MBEDTLS_SSL_SOME_FEATURES are left to defaults; remove server side if possible
+
+# Keep HTTP server enabled (web UI)
+CONFIG_HTTPD_MAX_URI_HANDLERS=12
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=512
+CONFIG_HTTPD_MAX_REQ_BODY_LEN=4096
+
+# WiFi: keep long-range AP mode enabled by code; keep PS off in runtime
+CONFIG_ESP_WIFI= y
+
+# Logging: reduce level to WARN to save size
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# CONFIG_LOG_DEFAULT_LEVEL_INFO is not set
+# CONFIG_LOG_DEFAULT_LEVEL_DEBUG is not set
+
+# Remove MQTT if present
+# CONFIG_MQTT_PROTOCOL_311 is not set
+# CONFIG_MQTT_TRANSPORT_SSL_DISABLED is not set
+# CONFIG_MQTT_TRANSPORT_WEBSOCKET is not set
+
+# Disable other heavy components not needed for telemetry
+# (Uncomment to enforce disabling, verify dependencies in menuconfig)
+# CONFIG_ESP32_WIFI_ENABLED=y
+# CONFIG_BT_ENABLED is not set
+# CONFIG_BT_NIMBLE_ENABLED is not set
+
+# NOTE: This file is a conservative trimmed suggestion. To produce a fully valid sdkconfig
+# for ESP-IDF you should run `idf.py menuconfig` with these options and verify all
+# dependencies. Use this file as a starting point and adjust with `menuconfig` as needed.

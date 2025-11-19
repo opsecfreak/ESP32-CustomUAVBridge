@@ -46,6 +46,7 @@
 #include "db_esp_now.h"
 #include "db_serial.h"
 #include "globals.h"
+#include "dronebridge_config.h"
 
 #ifdef CONFIG_BT_ENABLED
 
@@ -286,16 +287,18 @@ void db_init_wifi_apmode(int wifi_mode) {
                                                         &ap_staipassigned_ip));
 
     wifi_config_t wifi_config = {
-            .ap = {
-                    .ssid = "DroneBridge ESP32 Init Error",
-                    .password = "dronebridge",
-                    .ssid_len = 0,
-                    .authmode = WIFI_AUTH_WPA2_PSK,
-                    .channel = db_param_channel.value.db_param_u8.value,
-                    .ssid_hidden = 0,
-                    .beacon_interval = 100,
-                    .max_connection = 10
-            },
+        .ap = {
+            .ssid = "DroneBridge ESP32 Init Error",
+            .password = "dronebridge",
+            .ssid_len = 0,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            /* Force an optimal fixed channel for LR stability (choose 6) - user can still change via UI */
+            .channel = 6,
+            .ssid_hidden = 0,
+            .beacon_interval = 100,
+            /* Limit max connections to reduce resource usage on constrained device */
+            .max_connection = 4
+        },
     };
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-truncation"
@@ -328,6 +331,12 @@ void db_init_wifi_apmode(int wifi_mode) {
     ESP_ERROR_CHECK(esp_wifi_set_country(&wifi_country));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* Ensure max TX power (use board default). */
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(DB_DEFAULT_AP_MAX_TX_POWER_DBM));
+    /* Force a narrow bandwidth suitable for LR stability */
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, DB_DEFAULT_AP_BANDWIDTH));
+    /* Force the AP channel for LR stability (re-apply after start to ensure driver picks it up) */
+    ESP_ERROR_CHECK(esp_wifi_set_channel(DB_DEFAULT_AP_CHANNEL, WIFI_SECOND_CHAN_NONE));
     DB_RADIO_IS_OFF = false; // just to be sure, but should not be necessary
 
     /* Assign IP to ap/gateway */
@@ -585,6 +594,33 @@ void db_read_settings_nvs() {
         ESP_LOGI(TAG, "Reading settings from NVS");
         db_param_read_all_params_nvs(&my_handle);
         nvs_close(my_handle);
+
+        /*
+         * For the XIAO ESP32-C3 official build force the UART GPIO pins to the
+         * compile-time defaults and persist them to NVS. This prevents accidental
+         * reconfiguration via UI and ensures fresh/used devices use the board mapping.
+         */
+#if defined(CONFIG_DB_OFFICIAL_BOARD_1_X_C3)
+        ESP_LOGI(TAG, "Enforcing XIAO C3 UART pin defaults and persisting to NVS");
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle) == ESP_OK) {
+            uint8_t tx = (uint8_t) DB_DEFAULT_UART_TX_PIN;
+            uint8_t rx = (uint8_t) DB_DEFAULT_UART_RX_PIN;
+            uint8_t rts = (uint8_t) DB_DEFAULT_UART_RTS_PIN;
+            uint8_t cts = (uint8_t) DB_DEFAULT_UART_CTS_PIN;
+            db_param_gpio_tx.value.db_param_u8.value = tx;
+            db_param_gpio_rx.value.db_param_u8.value = rx;
+            db_param_gpio_rts.value.db_param_u8.value = rts;
+            db_param_gpio_cts.value.db_param_u8.value = cts;
+            ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(my_handle, (char *) db_param_gpio_tx.db_name, tx));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(my_handle, (char *) db_param_gpio_rx.db_name, rx));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(my_handle, (char *) db_param_gpio_rts.db_name, rts));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(my_handle, (char *) db_param_gpio_cts.db_name, cts));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_commit(my_handle));
+            nvs_close(my_handle);
+        } else {
+            ESP_LOGW(TAG, "Could not open NVS for write to persist UART defaults");
+        }
+#endif
 
         // print parameters to console for logging
         uint8_t param_str_buffer[512] = {0};

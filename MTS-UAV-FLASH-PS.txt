@@ -1,0 +1,25 @@
+PowerShell build & flash steps for XIAO ESP32-C3 (ESP-IDF 5.x)
+
+1) Open a PowerShell with ESP-IDF environment initialized (run esp-idf PowerShell shortcut or run export script provided by ESP-IDF).
+
+2) Select target (esp32c3) and copy the telemetry sdkconfig if desired:
+# from project root
+copy .\sdkconfig_c3_telemetry .\sdkconfig
+
+3) Configure / adjust with menuconfig (optional but recommended):
+idf.py menuconfig
+# verify target: Component config -> DB_OFFICIAL_BOARD_1_X_C3 set appropriately
+
+4) Build the project:
+idf.py fullclean; idf.py build
+
+5) Flash to the XIAO C3 (replace COM3 with your serial port):
+idf.py -p COM3 flash monitor
+
+6) If you need to erase before flashing:
+idf.py -p COM3 erase-flash; idf.py -p COM3 flash
+
+Notes:
+- UART flow control: XIAO C3 pins are fixed in this build (TX=GPIO5, RX=GPIO4, RTS=GPIO6, CTS=GPIO7). If hardware flow control isn't available on your board revision, the firmware will fallback to no-flow-control automatically.
+- If binary too large: run `idf.py build` and check build output (.elf size). Use `idf.py size-components` to inspect big components and disable unused features in `menuconfig`.
+- To change to a different sdkconfig, replace the sdkconfig file and run `idf.py fullclean && idf.py build`.
